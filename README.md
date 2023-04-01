@@ -57,6 +57,74 @@ func storageClient(bucketName: String = "photos") async -> StorageFileApi? {
 }
 ```
 
+Architecturally, a pattern you can follow is holding these values and functions in a provider class using a simple Singleton pattern
+or inject it with something like `Resolver`.
+
+```
+class SupabaseProvider {
+    
+    private let apiDictionaryKey = "supabase-key"
+    private let supabaseUrlKey = "supabase-url"
+    private let discordUrlKey = "discord-callback-url"
+    
+    private init() {}
+    
+    static let shared = SupabaseProvider()
+    
+    lazy var supabaseClient: SupabaseClient = {
+        return SupabaseClient(supabaseURL: supabaseUrl, supabaseKey: apiKey)
+    }()
+    
+    func loggedInUserId() async -> String? {
+        return try? await SupabaseProvider.shared.supabaseClient.auth.session.user.id.uuidString
+    }
+    
+    private var keysPlist: NSDictionary {
+        if
+            let path = Bundle.main.path(forResource: "Keys", ofType: "plist"),
+            let dictionary = NSDictionary(contentsOfFile: path) {
+            return dictionary
+        }
+        fatalError("You must have a Keys.plist file in your application codebase.")
+    }
+    
+    private var apiKey: String {
+        guard let apiKey = keysPlist[apiDictionaryKey] as? String else {
+            fatalError("Your Keys.plist must have a key of: \(apiDictionaryKey) and a corresponding value of type String.")
+        }
+        return apiKey
+    }
+    
+    var supabaseUrl: URL {
+        guard let url = keysPlist[supabaseUrlKey] as? String else {
+            fatalError("Your Keys.plist must have a key of: \(supabaseUrlKey) and a corresponding value of type String.")
+        }
+        return URL(string: url)!
+    }
+    
+    var discordCallbackUrl: String {
+        guard let url = keysPlist[discordUrlKey] as? String else {
+            fatalError("Your Keys.plist must have a key of: \(discordUrlKey) and a corresponding value of type String.")
+        }
+        return url
+    }
+    
+    // Storage
+    
+    func storageClient(bucketName: String = "photos") async -> StorageFileApi? {
+        guard let jwt = try? await supabaseClient.auth.session.accessToken else { return nil}
+        return SupabaseStorageClient(
+            url: "\(supabaseUrl)/storage/v1",
+            headers: [
+                "Authorization": "Bearer \(jwt)",
+                "apikey": apiKey,
+            ]
+        ).from(id: bucketName)
+    }
+}
+
+```
+
 ## `Uploading and Downloading`
 
 With your client of choice, you can download via the following given some RLS and 
@@ -78,7 +146,7 @@ it to a user's bucket folder:
 ```Swift
 
 func loggedInUserId() async -> String? {
-    return try? await supabaseClient.auth.session.user.id.uuidString
+    return try? await SupabaseProvider.shared.client.auth.session.user.id.uuidString
 }
 
 guard let image = imageView.image?.pngData() else { return }
@@ -105,6 +173,21 @@ guard let uploadResponseData = try? await storageClient?.upload(
 
 ## `URL Creation`
 
+Signed URL creation is fairly straightforward and is the recommended way to grab URLs from storage devices. For larger files, you should
+incorporate `CoreData` to keep them on device, probably with the help of an LRU Cache.
+
+```Swift
+let storageClient = await SupabaseProvider.shared.storageClient(bucketName: "bucket_name")
+// URL will expire in 1 hour (3600 seconds)
+guard let url = try? await storageClient?.createSignedURL(path: imageUrl, expiresIn: 3600) else {
+    return
+}
+if let image = getThumbnailImage(forUrl: url) {
+    DispatchQueue.main.async {
+        self.userPostImageView.image = image
+    }
+}
+```
 
 ## Sponsors
 
